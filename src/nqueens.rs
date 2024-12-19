@@ -57,8 +57,12 @@ impl NQueensSolver {
     pub fn run(&mut self) -> Option<(Individual, usize)> {
         for generation in 0..self.generation_limit {
             if let Some(solution) = self.select_and_crossover() {
+                println!("Generation {}: Best fitness = {}", generation, solution.fitness);
                 return Some((solution, generation));
             }
+    
+            let best_fitness = self.population.iter().map(|ind| ind.fitness).min().unwrap();
+            println!("Generation {}: Best fitness = {}", generation, best_fitness);
         }
         None
     }
