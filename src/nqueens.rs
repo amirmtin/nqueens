@@ -1,6 +1,8 @@
 use rand::prelude::*;
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::thread;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Individual {
     pub genes: Vec<usize>,
     pub fitness: usize,
@@ -25,11 +27,9 @@ impl Individual {
     }
 }
 
-
 pub struct NQueensSolver {
     pub n: usize,
     max_fitness: usize,
-    pub population: Vec<Individual>,
     population_size: usize,
     mutation_rate: f64,
     generation_limit: usize,
@@ -43,11 +43,9 @@ impl NQueensSolver {
         generation_limit: usize,
     ) -> Self {
         let max_fitness = n * (n - 1) / 2;
-        let population = Self::initial_population(n, population_size);
         Self {
             n,
             max_fitness,
-            population,
             population_size,
             mutation_rate,
             generation_limit,
@@ -55,16 +53,105 @@ impl NQueensSolver {
     }
 
     pub fn run(&mut self) -> Option<(Individual, usize)> {
+        println!("Max fitness: {}", self.max_fitness);
+
+
+        let mut population = Self::initial_population(self.n, self.population_size);
+        let n = self.n;
+        let mutation_rate = self.mutation_rate;
+        
         for generation in 0..self.generation_limit {
-            if let Some(solution) = self.select_and_crossover() {
-                println!("Generation {}: Best fitness = {}", generation, solution.fitness);
-                return Some((solution, generation));
+            let (select_tx, select_rx) = mpsc::channel();
+
+            let population_clone = population.clone();
+
+
+            thread::spawn(move || {
+                Self::select_step(&population_clone, select_tx);
+            });
+
+
+            let (crossover_tx, crossover_rx) = mpsc::channel();
+
+
+            thread::spawn(move || {
+                Self::crossover_step(n, select_rx, crossover_tx);
+            });
+
+
+            let (mutate_tx, mutate_rx) = mpsc::channel();
+
+
+            thread::spawn(move || {
+                Self::mutate_step(crossover_rx, mutate_tx, n, mutation_rate);
+            });
+
+
+            let mut new_population = Vec::with_capacity(self.population_size);
+            let mut best_fitness = 0;
+
+            for i in mutate_rx {
+                if i.fitness == self.max_fitness {
+                    return Some((i, generation));
+                }
+                if i.fitness > best_fitness {
+                    best_fitness = i.fitness;
+                }
+                new_population.push(i);
             }
-    
-            let best_fitness = self.population.iter().map(|ind| ind.fitness).min().unwrap();
-            println!("Generation {}: Best fitness = {}", generation, best_fitness);
+
+            println!("Generation {}: Best fitness: {}", generation, best_fitness);
+            population = new_population;
         }
         None
+    }
+
+    fn select_individual(population: &Vec<Individual>, total_fitness: usize) -> &Individual {
+        let mut cumulative_fitness = 0;
+        let target_fitness = Self::generate_random(total_fitness);
+        for individual in population {
+            cumulative_fitness += individual.fitness;
+            if cumulative_fitness > target_fitness {
+                return individual;
+            }
+        }
+        &population[0]
+    }
+
+    fn select_step(population: &Vec<Individual>, tx: Sender<(Individual, Individual)>) {
+        let total_fitness: usize = Self::sum_fitness(population);
+        let population_size = population.len();
+        for _ in (0..population_size).step_by(2) {
+            let population_clone = population.clone();
+            let tx_clone = tx.clone();
+
+            thread::spawn(move || {
+                let pop1 = Self::select_individual(&population_clone, total_fitness);
+                let pop2 = Self::select_individual(&population_clone, total_fitness);
+                tx_clone.send((pop1.clone(), pop2.clone())).unwrap();
+            });
+        }
+    }
+
+    fn crossover_step(n: usize, rx: Receiver<(Individual, Individual)>, tx: Sender<Individual>) {
+        for (parent1, parent2) in rx {
+            let tx_clone = tx.clone();
+            thread::spawn(move || {
+                let (child1, child2) = Self::crossover(n, &parent1, &parent2);
+                tx_clone.send(child1).unwrap();
+                tx_clone.send(child2).unwrap();
+            });
+        }
+    }
+
+    fn mutate_step(rx: Receiver<Individual>, tx: Sender<Individual>, n: usize, mutation_rate: f64) {
+        for mut individual in rx {
+            let tx_clone = tx.clone();
+            thread::spawn(move || {
+                Self::mutate(&mut individual, n, mutation_rate);
+                tx_clone.send(individual).unwrap();
+            });
+        }
     }
 
     fn initial_population(n: usize, population_size: usize) -> Vec<Individual> {
@@ -81,12 +168,12 @@ impl NQueensSolver {
         population
     }
 
-    fn crossover(&self, parent1: &Individual, parent2: &Individual) -> (Individual, Individual) {
-        let crossover_point = Self::generate_random(self.n);
-        let mut genes1 = Vec::with_capacity(self.n);
-        let mut genes2 = Vec::with_capacity(self.n);
+    fn crossover(n: usize, parent1: &Individual, parent2: &Individual) -> (Individual, Individual) {
+        let crossover_point = Self::generate_random(n);
+        let mut genes1 = Vec::with_capacity(n);
+        let mut genes2 = Vec::with_capacity(n);
 
-        for i in 0..self.n {
+        for i in 0..n {
             if i < crossover_point {
                 genes1.push(parent1.genes[i]);
                 genes2.push(parent2.genes[i]);
@@ -109,58 +196,17 @@ impl NQueensSolver {
         (child1, child2)
     }
 
-    fn mutate(&mut self, individual: &mut Individual) {
-        if rand::thread_rng().gen_bool(self.mutation_rate) {
-            let mutation_point = Self::generate_random(self.n);
-            individual.genes[mutation_point] = Self::generate_random(self.n);
+    fn mutate(individual: &mut Individual, n: usize, mutation_rate: f64) {
+        if rand::thread_rng().gen_bool(mutation_rate) {
+            let mutation_point = Self::generate_random(n);
+            individual.genes[mutation_point] = Self::generate_random(n);
             individual.calculate_fitness();
         }
     }
 
-    fn select_and_crossover(&mut self) -> Option<Individual> {
-        let mut new_population = Vec::with_capacity(self.population_size);
 
-        while new_population.len() < self.population_size {
-            let parent1 = self.select_individual();
-            let parent2 = self.select_individual();
-
-            let (mut child1, mut child2) = self.crossover(parent1, parent2);
-
-            self.mutate(&mut child1);
-            self.mutate(&mut child2);
-
-            if child1.fitness == self.max_fitness {
-                return Some(child1);
-            }
-            if child2.fitness == self.max_fitness {
-                return Some(child2);
-            }
-
-            new_population.push(child1);
-            if new_population.len() < self.population_size {
-                new_population.push(child2);
-            }
-        }
-
-        self.population = new_population;
-        None
-    }
-
-    fn select_individual(&self) -> &Individual {
-        let total_fitness: usize = self.sum_fitness();
-        let mut cumulative_fitness = 0;
-        let target_fitness = Self::generate_random(total_fitness);
-        for individual in &self.population {
-            cumulative_fitness += individual.fitness;
-            if cumulative_fitness > target_fitness {
-                return individual;
-            }
-        }
-        &self.population[0]
-    }
-
-    fn sum_fitness(&self) -> usize {
-        self.population.iter().map(|ind| ind.fitness).sum()
+    fn sum_fitness(population: &Vec<Individual>) -> usize {
+        population.iter().map(|ind| ind.fitness).sum()
     }
 
     fn generate_random(upper: usize) -> usize {
