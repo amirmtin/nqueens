@@ -122,35 +122,36 @@ impl NQueensSolver {
         let total_fitness: usize = Self::sum_fitness(population);
         let population_size = population.len();
         for _ in (0..population_size).step_by(2) {
-            let population_clone = population.clone();
-            let tx_clone = tx.clone();
-
-            thread::spawn(move || {
-                let pop1 = Self::select_individual(&population_clone, total_fitness);
-                let pop2 = Self::select_individual(&population_clone, total_fitness);
-                tx_clone.send((pop1.clone(), pop2.clone())).unwrap();
-            });
+            let pop1 = Self::select_individual(&population, total_fitness);
+            let pop2 = Self::select_individual(&population, total_fitness);
+            match tx.send((pop1.clone(), pop2.clone())) {
+                Result::Ok(_) => {},
+                Result::Err(_) => {},
+            }
         }
     }
 
     fn crossover_step(n: usize, rx: Receiver<(Individual, Individual)>, tx: Sender<Individual>) {
         for (parent1, parent2) in rx {
-            let tx_clone = tx.clone();
-            thread::spawn(move || {
-                let (child1, child2) = Self::crossover(n, &parent1, &parent2);
-                tx_clone.send(child1).unwrap();
-                tx_clone.send(child2).unwrap();
-            });
+            let (child1, child2) = Self::crossover(n, &parent1, &parent2);
+            match tx.send(child1) {
+                Result::Ok(_) => {},
+                Result::Err(_) => {},
+            }
+            match tx.send(child2) {
+                Result::Ok(_) => {},
+                Result::Err(_) => {},
+            }
         }
     }
 
     fn mutate_step(rx: Receiver<Individual>, tx: Sender<Individual>, n: usize, mutation_rate: f64) {
         for mut individual in rx {
-            let tx_clone = tx.clone();
-            thread::spawn(move || {
-                Self::mutate(&mut individual, n, mutation_rate);
-                tx_clone.send(individual).unwrap();
-            });
+            Self::mutate(&mut individual, n, mutation_rate);
+            match tx.send(individual) {
+                Result::Ok(_) => {},
+                Result::Err(_) => {},
+            }
         }
     }
 
