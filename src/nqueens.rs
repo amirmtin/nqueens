@@ -1,4 +1,5 @@
 use rand::prelude::*;
+use rayon::prelude::*;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
@@ -55,37 +56,30 @@ impl NQueensSolver {
     pub fn run(&mut self) -> Option<(Individual, usize)> {
         println!("Max fitness: {}", self.max_fitness);
 
-
         let mut population = Self::initial_population(self.n, self.population_size);
         let n = self.n;
         let mutation_rate = self.mutation_rate;
-        
+
         for generation in 0..self.generation_limit {
             let (select_tx, select_rx) = mpsc::channel();
 
             let population_clone = population.clone();
 
-
             thread::spawn(move || {
                 Self::select_step(&population_clone, select_tx);
             });
 
-
             let (crossover_tx, crossover_rx) = mpsc::channel();
-
 
             thread::spawn(move || {
                 Self::crossover_step(n, select_rx, crossover_tx);
             });
 
-
             let (mutate_tx, mutate_rx) = mpsc::channel();
-
 
             thread::spawn(move || {
                 Self::mutate_step(crossover_rx, mutate_tx, n, mutation_rate);
             });
-
 
             let mut new_population = Vec::with_capacity(self.population_size);
             let mut best_fitness = 0;
@@ -121,26 +115,43 @@ impl NQueensSolver {
     fn select_step(population: &Vec<Individual>, tx: Sender<(Individual, Individual)>) {
         let total_fitness: usize = Self::sum_fitness(population);
         let population_size = population.len();
-        for _ in (0..population_size).step_by(2) {
-            let pop1 = Self::select_individual(&population, total_fitness);
-            let pop2 = Self::select_individual(&population, total_fitness);
-            match tx.send((pop1.clone(), pop2.clone())) {
-                Result::Ok(_) => {},
-                Result::Err(_) => {},
-            }
-        }
+        // for _ in (0..population_size).step_by(2) {
+        //     let pop1 = Self::select_individual(&population, total_fitness);
+        //     let pop2 = Self::select_individual(&population, total_fitness);
+        //     match tx.send((pop1.clone(), pop2.clone())) {
+        //         Result::Ok(_) => {},
+        //         Result::Err(_) => {},
+        //     }
+        // }
+
+        (0..population_size)
+            .into_par_iter()
+            .step_by(2)
+            .for_each(|_| {
+                let population_clone = population.clone();
+                let tx_clone = tx.clone();
+
+                rayon::spawn(move || {
+                    let pop1 = Self::select_individual(&population_clone, total_fitness);
+                    let pop2 = Self::select_individual(&population_clone, total_fitness);
+                    match tx_clone.send((pop1.clone(), pop2.clone())) {
+                        Result::Ok(_) => {}
+                        Result::Err(_) => {}
+                    }
+                });
+            });
     }
 
     fn crossover_step(n: usize, rx: Receiver<(Individual, Individual)>, tx: Sender<Individual>) {
         for (parent1, parent2) in rx {
             let (child1, child2) = Self::crossover(n, &parent1, &parent2);
             match tx.send(child1) {
-                Result::Ok(_) => {},
-                Result::Err(_) => {},
+                Result::Ok(_) => {}
+                Result::Err(_) => {}
             }
             match tx.send(child2) {
-                Result::Ok(_) => {},
-                Result::Err(_) => {},
+                Result::Ok(_) => {}
+                Result::Err(_) => {}
             }
         }
     }
@@ -149,8 +160,8 @@ impl NQueensSolver {
         for mut individual in rx {
             Self::mutate(&mut individual, n, mutation_rate);
             match tx.send(individual) {
-                Result::Ok(_) => {},
-                Result::Err(_) => {},
+                Result::Ok(_) => {}
+                Result::Err(_) => {}
             }
         }
     }
@@ -204,7 +215,6 @@ impl NQueensSolver {
             individual.calculate_fitness();
         }
     }
-
 
     fn sum_fitness(population: &Vec<Individual>) -> usize {
         population.iter().map(|ind| ind.fitness).sum()
